@@ -17,18 +17,37 @@ import {
   ViewStyle,
 } from 'react-native';
 
-// Safe dynamic import of expo-audio so web / simulators never crash
+// ─── Safe imports: try native speech recognition first, then expo-audio fallback ───
+let ExpoSpeechRecognitionModule: any = null;
+let useSpeechRecognitionEvent: any = null;
+let HAS_NATIVE_SPEECH = false;
+
+try {
+  const speechMod = require('expo-speech-recognition');
+  ExpoSpeechRecognitionModule = speechMod.ExpoSpeechRecognitionModule;
+  useSpeechRecognitionEvent = speechMod.useSpeechRecognitionEvent;
+  // Verify the module actually loaded (won't if native code isn't compiled in)
+  if (ExpoSpeechRecognitionModule && typeof ExpoSpeechRecognitionModule.start === 'function') {
+    HAS_NATIVE_SPEECH = true;
+  }
+} catch (e) {
+  console.log('expo-speech-recognition not available, will use expo-audio fallback');
+}
+
+// Fallback: expo-audio for recording + Gemini for transcription
 let AudioModule: any = null;
 let useAudioRecorder: any = null;
 let RecordingPresets: any = null;
+let setAudioModeAsync: any = null;
 
 try {
   const expoAudio = require('expo-audio');
   AudioModule = expoAudio.AudioModule;
   useAudioRecorder = expoAudio.useAudioRecorder;
   RecordingPresets = expoAudio.RecordingPresets;
+  setAudioModeAsync = expoAudio.setAudioModeAsync || AudioModule?.setAudioModeAsync;
 } catch (e) {
-  console.log('expo-audio not available on this platform:', e);
+  console.log('expo-audio not available:', e);
 }
 
 const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
@@ -43,39 +62,314 @@ interface VoiceTextInputProps extends TextInputProps {
   onVoiceSubmitted?: (text: string) => void;
 }
 
-export function VoiceTextInput({
-  containerStyle,
-  inputStyle,
-  voiceCategory = 'general',
+// ─── Inner modal content: uses hooks so it's only mounted when modal is visible ───
+function VoiceModalContent({
+  voiceCategory,
   voiceTitle,
-  value,
-  onChangeText,
-  placeholder,
-  ...props
-}: VoiceTextInputProps) {
-  const { language, t } = useLanguage();
-  const [modalVisible, setModalVisible] = useState(false);
-  const [spokenText, setSpokenText] = useState('');
-  const [isRecording, setIsRecording] = useState(false);
-  const [recordingSeconds, setRecordingSeconds] = useState(0);
-  const [isTranscribing, setIsTranscribing] = useState(false);
+  language,
+  t,
+  onConfirm,
+  onClose,
+  initialText,
+}: {
+  voiceCategory: VoiceCategory;
+  voiceTitle?: string;
+  language: string;
+  t: (key: any) => string;
+  onConfirm: (text: string) => void;
+  onClose: () => void;
+  initialText: string;
+}) {
+  const [isRecognizing, setIsRecognizing] = useState(false);
+  const [spokenText, setSpokenText] = useState(initialText);
   const [voiceError, setVoiceError] = useState('');
-
-  // Audio recorder reference
-  const recorder = useAudioRecorder ? useAudioRecorder(RecordingPresets?.HIGH_QUALITY || {}) : null;
+  const [elapsed, setElapsed] = useState(0);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [mode, setMode] = useState<'native' | 'audio' | 'none'>('none');
   const timerRef = useRef<any>(null);
-  const recognitionRef = useRef<any>(null);
+
+  // expo-audio recorder hook (always called — hooks must be unconditional)
+  const recorder = useAudioRecorder
+    ? useAudioRecorder(RecordingPresets?.HIGH_QUALITY || {})
+    : null;
+
+  // ─── Native speech recognition event handlers (only if available) ───
+  if (HAS_NATIVE_SPEECH && useSpeechRecognitionEvent) {
+    useSpeechRecognitionEvent('start', () => {
+      setIsRecognizing(true);
+      setElapsed(0);
+      timerRef.current = setInterval(() => setElapsed((s) => s + 1), 1000);
+    });
+
+    useSpeechRecognitionEvent('end', () => {
+      setIsRecognizing(false);
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    });
+
+    useSpeechRecognitionEvent('result', (event: any) => {
+      const transcript = event.results?.[0]?.transcript ?? '';
+      if (transcript) {
+        setSpokenText(transcript);
+        setVoiceError('');
+      }
+    });
+
+    useSpeechRecognitionEvent('error', (event: any) => {
+      console.log('Speech recognition error:', event.error, event.message);
+      setIsRecognizing(false);
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      const errCode = event.error;
+      if (errCode === 'no-speech') {
+        setVoiceError(
+          language === 'kn'
+            ? 'ಯಾವುದೇ ಮಾತು ಕೇಳಿಸಲಿಲ್ಲ. ದಯವಿಟ್ಟು ಮತ್ತೊಮ್ಮೆ ಮಾತನಾಡಿ.'
+            : 'No speech detected. Please tap the mic and speak clearly.'
+        );
+      } else if (errCode === 'not-allowed') {
+        setVoiceError(
+          language === 'kn'
+            ? 'ಮೈಕ್ರೊಫೋನ್ ಅನುಮತಿ ನಿರಾಕರಿಸಲಾಗಿದೆ.'
+            : 'Microphone permission denied. Allow it in Settings.'
+        );
+      } else {
+        setVoiceError(
+          language === 'kn'
+            ? 'ಧ್ವನಿ ಗ್ರಹಣ ದೋಷ. ಮತ್ತೊಮ್ಮೆ ಪ್ರಯತ್ನಿಸಿ.'
+            : 'Recognition error. Try again or select a suggestion.'
+        );
+      }
+    });
+  }
 
   useEffect(() => {
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.stop();
-        } catch {}
-      }
-    };
+    startListening();
+    return () => stopListening();
   }, []);
+
+  const getLangCode = () => (language === 'kn' ? 'kn-IN' : 'en-IN');
+
+  // ─── Start: tries native speech → expo-audio fallback ───
+  const startListening = async () => {
+    setVoiceError('');
+    setSpokenText('');
+    setElapsed(0);
+
+    // 1) Web platform: use Web Speech API
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      const SpeechRecognition =
+        (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (SpeechRecognition) {
+        const rec = new SpeechRecognition();
+        rec.continuous = false;
+        rec.interimResults = true;
+        rec.lang = getLangCode();
+        rec.onresult = (event: any) => {
+          const transcript = Array.from(event.results)
+            .map((r: any) => r[0].transcript)
+            .join('');
+          setSpokenText(transcript);
+        };
+        rec.onerror = () => setIsRecognizing(false);
+        rec.onend = () => setIsRecognizing(false);
+        rec.start();
+        setIsRecognizing(true);
+        setMode('native');
+        return;
+      }
+    }
+
+    // 2) Native: try expo-speech-recognition (available after new APK)
+    if (HAS_NATIVE_SPEECH && ExpoSpeechRecognitionModule) {
+      try {
+        const result = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+        if (!result.granted) {
+          setVoiceError(
+            language === 'kn'
+              ? 'ಮೈಕ್ರೊಫೋನ್ ಅನುಮತಿ ನಿರಾಕರಿಸಲಾಗಿದೆ.'
+              : 'Microphone permission denied.'
+          );
+          return;
+        }
+        ExpoSpeechRecognitionModule.start({
+          lang: getLangCode(),
+          interimResults: true,
+          continuous: false,
+          requiresOnDeviceRecognition: false,
+        });
+        setMode('native');
+        return;
+      } catch (err) {
+        console.log('Native speech start failed, falling through to audio:', err);
+      }
+    }
+
+    // 3) Fallback: expo-audio recording + Gemini transcription
+    if (recorder && AudioModule) {
+      try {
+        const permission = await AudioModule.requestRecordingPermissionsAsync();
+        if (!permission.granted) {
+          setVoiceError(
+            language === 'kn'
+              ? 'ಮೈಕ್ರೊಫೋನ್ ಅನುಮತಿ ನಿರಾಕರಿಸಲಾಗಿದೆ. ಸೆಟ್ಟಿಂಗ್ಸ್‌ನಲ್ಲಿ ಅನುಮತಿ ನೀಡಿ.'
+              : 'Microphone permission denied. Please allow it in Settings.'
+          );
+          return;
+        }
+
+        if (setAudioModeAsync) {
+          await setAudioModeAsync({
+            allowsRecording: true,
+            playsInSilentMode: true,
+          });
+        }
+
+        await recorder.prepareToRecordAsync();
+        recorder.record();
+        setIsRecognizing(true);
+        setMode('audio');
+        timerRef.current = setInterval(() => setElapsed((s) => s + 1), 1000);
+        return;
+      } catch (err: any) {
+        console.log('Audio recording start failed:', err);
+        setVoiceError(err.message || 'Could not access microphone.');
+        return;
+      }
+    }
+
+    // 4) Nothing available
+    setVoiceError(
+      language === 'kn'
+        ? 'ಧ್ವನಿ ಗ್ರಹಣ ಲಭ್ಯವಿಲ್ಲ. ಕೆಳಗಿನ ಸಲಹೆಗಳನ್ನು ಒತ್ತಿ ಆಯ್ಕೆಮಾಡಿ.'
+        : 'Voice input unavailable. Please select a suggestion below or type manually.'
+    );
+  };
+
+  // ─── Stop: handles both native and audio-recording modes ───
+  const stopListening = async () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+
+    if (mode === 'native') {
+      try { ExpoSpeechRecognitionModule?.stop(); } catch {}
+      setIsRecognizing(false);
+      return;
+    }
+
+    // Audio mode: stop recording → transcribe with Gemini
+    if (mode === 'audio' && recorder) {
+      setIsRecognizing(false);
+      setIsTranscribing(true);
+
+      try {
+        await recorder.stop();
+        const uri = recorder.uri;
+        if (!uri) throw new Error('No audio file');
+
+        // Read audio as base64
+        const resp = await fetch(uri);
+        const blob = await resp.blob();
+        const base64Audio = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const res = reader.result as string;
+            resolve(res.includes(',') ? res.split(',')[1] : res);
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+
+        if (!base64Audio) throw new Error('Audio conversion failed');
+
+        // Send to Gemini for speech-to-text
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+        const geminiResp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                {
+                  text: `You are a speech recognition assistant for an Indian farming app.
+The user spoke into their microphone in ${language === 'kn' ? 'Kannada (ಕನ್ನಡ)' : 'English'}.
+Category: ${voiceCategory}.
+Transcribe the audio to text accurately.
+- If Kannada, output Kannada script (e.g. ಮಂಡ್ಯ, ಟೊಮ್ಯಾಟೊ).
+- If English, output English text.
+- If a number, output the number.
+- Output ONLY the recognized text. No explanations.`,
+                },
+                {
+                  inline_data: {
+                    mime_type: 'audio/m4a',
+                    data: base64Audio,
+                  },
+                },
+              ],
+            }],
+          }),
+        });
+
+        const json = await geminiResp.json();
+        const transcribed = json?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+        console.log('Gemini transcribed:', transcribed);
+
+        if (transcribed) {
+          setSpokenText(transcribed);
+        } else {
+          setVoiceError(
+            language === 'kn'
+              ? 'ಸ್ಪಷ್ಟವಾಗಿ ಕೇಳಿಸಲಿಲ್ಲ. ಮತ್ತೊಮ್ಮೆ ಮಾತನಾಡಿ ಅಥವಾ ಸಲಹೆ ಆಯ್ಕೆಮಾಡಿ.'
+              : 'Could not detect speech. Please speak again or pick a suggestion.'
+          );
+        }
+      } catch (err: any) {
+        console.log('Audio transcription error:', err);
+        setVoiceError(
+          language === 'kn'
+            ? 'ಧ್ವನಿ ಪ್ರಕ್ರಿಯೆ ವಿಫಲ. ಮತ್ತೊಮ್ಮೆ ಪ್ರಯತ್ನಿಸಿ.'
+            : 'Voice processing failed. Try again.'
+        );
+      } finally {
+        setIsTranscribing(false);
+      }
+    }
+  };
+
+  const handleConfirm = async () => {
+    if (isRecognizing) {
+      await stopListening();
+    }
+    // Small delay to let transcription finish if audio mode
+    setTimeout(() => {
+      onConfirm(spokenText.trim());
+    }, mode === 'audio' && isTranscribing ? 500 : 0);
+  };
+
+  const handleSuggestionPress = (text: string) => {
+    const cleanText = text.includes(' (') ? text.split(' (')[0] : text;
+    try { ExpoSpeechRecognitionModule?.stop(); } catch {}
+    if (recorder && mode === 'audio') {
+      try { recorder.stop(); } catch {}
+    }
+    if (timerRef.current) clearInterval(timerRef.current);
+    setIsRecognizing(false);
+    setSpokenText(cleanText);
+    onConfirm(cleanText);
+  };
+
+  const formatTimer = (s: number) => {
+    const m = Math.floor(s / 60).toString().padStart(2, '0');
+    const sec = (s % 60).toString().padStart(2, '0');
+    return `${m}:${sec}`;
+  };
 
   const getSuggestions = () => {
     if (voiceCategory === 'address') {
@@ -85,232 +379,183 @@ export function VoiceTextInput({
     }
     if (voiceCategory === 'crop') {
       return language === 'kn'
-        ? ['ಟೊಮ್ಯಾಟೊ', 'ಭತ್ತ (Paddy)', 'ರಾಗಿ (Ragi)', 'ಮೆಕ್ಕೆಜೋಳ (Maize)', 'ಕಬ್ಬು (Sugarcane)', 'ಹತ್ತಿ (Cotton)', 'ಈರುಳ್ಳಿ (Onion)', 'ಅಡಿಕೆ (Arecanut)', 'ಕಾಫಿ (Coffee)', 'ಶುಂಠಿ (Ginger)']
+        ? ['ಟೊಮ್ಯಾಟೊ', 'ಭತ್ತ', 'ರಾಗಿ', 'ಮೆಕ್ಕೆಜೋಳ', 'ಕಬ್ಬು', 'ಹತ್ತಿ', 'ಈರುಳ್ಳಿ', 'ಅಡಿಕೆ', 'ಕಾಫಿ', 'ಶುಂಠಿ']
         : ['Tomato', 'Rice (Paddy)', 'Finger Millet (Ragi)', 'Maize', 'Sugarcane', 'Cotton', 'Onion', 'Arecanut', 'Coffee', 'Ginger'];
     }
     if (voiceCategory === 'number') {
-      return ['0.5', '1', '2', '2.5', '3', '4', '5', '8', '10', '15', '20'];
+      return ['0.5', '1', '1.5', '2', '2.5', '3', '4', '5', '8', '10', '15', '20'];
     }
     return language === 'kn'
       ? ['ಹೌದು', 'ಇಲ್ಲ', 'ಉತ್ತಮ', 'ಕಡಿಮೆ', 'ಸಾಧಾರಣ']
       : ['Yes', 'No', 'Good', 'Low', 'Medium'];
   };
 
-  const startListening = async () => {
-    setVoiceError('');
-    setRecordingSeconds(0);
-    setSpokenText('');
+  const modeLabel = mode === 'native'
+    ? (language === 'kn' ? '⚡ ನೇರ ಧ್ವನಿ ಗ್ರಹಣ' : '⚡ Live Speech Recognition')
+    : mode === 'audio'
+    ? (language === 'kn' ? '🎵 ಆಡಿಯೋ + AI ಪರಿವರ್ತನೆ' : '🎵 Audio + AI Transcription')
+    : '';
 
-    // 1. Web Speech API if running on Web
-    if (Platform.OS === 'web' && typeof window !== 'undefined') {
-      const SpeechRecognition =
-        (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+  return (
+    <View style={styles.modalContent}>
+      {/* Header */}
+      <View style={styles.modalHeader}>
+        <ThemedText style={styles.modalTitle}>
+          {voiceTitle || (language === 'kn' ? '🎙️ ಧ್ವನಿ ಇನ್‌ಪುಟ್' : '🎙️ Voice Input')}
+        </ThemedText>
+        <Pressable onPress={onClose} style={styles.closeBtn}>
+          <ThemedText style={styles.closeBtnText}>✕</ThemedText>
+        </Pressable>
+      </View>
 
-      if (SpeechRecognition) {
-        try {
-          const recognition = new SpeechRecognition();
-          recognition.continuous = false;
-          recognition.interimResults = true;
-          recognition.lang = language === 'kn' ? 'kn-IN' : 'en-IN';
+      {/* Mode indicator */}
+      {modeLabel ? (
+        <ThemedText style={styles.modeBadge}>{modeLabel}</ThemedText>
+      ) : null}
 
-          recognition.onresult = (event: any) => {
-            const transcript = Array.from(event.results)
-              .map((res: any) => res[0].transcript)
-              .join('');
-            setSpokenText(transcript);
-          };
+      {/* Mic Visualizer */}
+      <View style={styles.visualizerContainer}>
+        <Pressable
+          style={[styles.pulsingCircle, isRecognizing && styles.pulsingCircleActive]}
+          onPress={isRecognizing ? () => stopListening() : startListening}
+        >
+          <ThemedText style={styles.largeMic}>🎙️</ThemedText>
+        </Pressable>
 
-          recognition.onerror = (event: any) => {
-            console.log('Voice error:', event.error);
-            setIsRecording(false);
-          };
+        {isTranscribing ? (
+          <View style={styles.transcribingRow}>
+            <ActivityIndicator color="#2E7D32" size="small" />
+            <ThemedText style={styles.listeningText}>
+              {language === 'kn' ? 'AI ಧ್ವನಿ ಪರಿವರ್ತಿಸುತ್ತಿದೆ...' : 'AI transcribing voice...'}
+            </ThemedText>
+          </View>
+        ) : isRecognizing ? (
+          <ThemedText style={styles.listeningText}>
+            {language === 'kn'
+              ? `🔴 ಆಲಿಸಲಾಗುತ್ತಿದೆ... (${formatTimer(elapsed)})`
+              : `🔴 Listening... (${formatTimer(elapsed)})`}
+          </ThemedText>
+        ) : (
+          <ThemedText style={styles.listeningText}>
+            {language === 'kn' ? '🎙️ ಮೈಕ್ ಒತ್ತಿ ಮಾತನಾಡಿ' : '🎙️ Tap mic to speak'}
+          </ThemedText>
+        )}
 
-          recognition.onend = () => {
-            setIsRecording(false);
-          };
+        <ThemedText style={styles.languageIndicator}>
+          {language === 'kn' ? '🇮🇳 ಭಾಷೆ: ಕನ್ನಡ' : '🇮🇳 Language: English (India)'}
+        </ThemedText>
+      </View>
 
-          recognition.start();
-          recognitionRef.current = recognition;
-          setIsRecording(true);
-          return;
-        } catch (e) {
-          console.log('Web speech error:', e);
-        }
-      }
-    }
-
-    // 2. Mobile Native Recording with expo-audio
-    if (recorder && AudioModule) {
-      try {
-        const permission = await AudioModule.requestRecordingPermissionsAsync();
-        if (!permission.granted) {
-          setVoiceError(
+      {/* Transcribed text */}
+      <View style={styles.spokenTextCard}>
+        <TextInput
+          style={styles.spokenTextInput}
+          value={spokenText}
+          onChangeText={setSpokenText}
+          placeholder={
             language === 'kn'
-              ? 'ಮೈಕ್ರೊಫೋನ್ ಅನುಮತಿ ನಿರಾಕರಿಸಲಾಗಿದೆ. ಸೆಟ್ಟಿಂಗ್ಸ್‌ನಲ್ಲಿ ಅನುಮತಿ ನೀಡಿ.'
-              : 'Microphone permission denied. Please allow microphone access in settings.'
-          );
-          return;
-        }
+              ? 'ನೀವು ಮಾತನಾಡಿದ ಪದ ಇಲ್ಲಿ ಮೂಡಿಬರುತ್ತದೆ...'
+              : 'Spoken words appear here...'
+          }
+          placeholderTextColor="#888"
+          multiline
+        />
+      </View>
 
-        await recorder.prepareToRecordAsync();
-        recorder.record();
-        setIsRecording(true);
+      {voiceError ? <ThemedText style={styles.errorText}>{voiceError}</ThemedText> : null}
 
-        timerRef.current = setInterval(() => {
-          setRecordingSeconds((prev) => prev + 1);
-        }, 1000);
-      } catch (err: any) {
-        console.log('Error starting native recording:', err);
-        setVoiceError(err.message || 'Could not access microphone.');
-        setIsRecording(false);
-      }
-    } else {
-      // Fallback
-      setIsRecording(true);
-    }
-  };
+      {/* Controls */}
+      <View style={styles.voiceControlRow}>
+        {isRecognizing ? (
+          <Pressable style={[styles.actionBtn, styles.stopBtn]} onPress={() => stopListening()}>
+            <ThemedText style={styles.actionBtnText}>
+              ⏹️ {language === 'kn' ? 'ನಿಲ್ಲಿಸಿ' : 'Stop'}
+            </ThemedText>
+          </Pressable>
+        ) : (
+          <Pressable
+            style={[styles.actionBtn, styles.listenBtn]}
+            onPress={startListening}
+            disabled={isTranscribing}
+          >
+            <ThemedText style={styles.actionBtnText}>
+              🎙️ {language === 'kn' ? 'ಮಾತನಾಡಿ' : 'Speak'}
+            </ThemedText>
+          </Pressable>
+        )}
 
-  const stopListeningAndTranscribe = async () => {
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-    setIsRecording(false);
+        <Pressable
+          style={[styles.actionBtn, styles.confirmBtn]}
+          onPress={handleConfirm}
+          disabled={isTranscribing}
+        >
+          <ThemedText style={styles.actionBtnText}>
+            ✓ {language === 'kn' ? 'ದೃಢಪಡಿಸಿ' : 'Confirm'}
+          </ThemedText>
+        </Pressable>
+      </View>
 
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-      } catch {}
-    }
+      {/* Quick Suggestions */}
+      <View style={styles.suggestionsSection}>
+        <ThemedText style={styles.suggestionsTitle}>
+          {language === 'kn' ? '💡 ಬೇಗ ಆಯ್ಕೆ:' : '💡 Quick picks:'}
+        </ThemedText>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.suggestionsList}
+        >
+          {getSuggestions().map((item, idx) => (
+            <Pressable key={idx} style={styles.suggestionChip} onPress={() => handleSuggestionPress(item)}>
+              <ThemedText style={styles.suggestionText}>🗣️ {item}</ThemedText>
+            </Pressable>
+          ))}
+        </ScrollView>
+      </View>
 
-    // If native recorder was used, send audio to Gemini for speech-to-text
-    if (recorder && recorder.uri) {
-      setIsTranscribing(true);
-      try {
-        await recorder.stop();
-        const uri = recorder.uri;
-        console.log('Recorded audio URI:', uri);
+      {/* Tip */}
+      <View style={styles.tipBox}>
+        <ThemedText style={styles.tipBoxText}>
+          {mode === 'audio'
+            ? (language === 'kn'
+              ? '💡 ಮಾತನಾಡಿ → ನಿಲ್ಲಿಸಿ ಒತ್ತಿ → AI ನಿಮ್ಮ ಮಾತನ್ನು ಅಕ್ಷರಗಳಾಗಿ ಪರಿವರ್ತಿಸುತ್ತದೆ.'
+              : '💡 Speak → Tap Stop → AI will convert your voice to text.')
+            : (language === 'kn'
+              ? '💡 ಸ್ಪಷ್ಟವಾಗಿ ಮಾತನಾಡಿ. ಕನ್ನಡ ಅಥವಾ ಇಂಗ್ಲಿಷ್ ಎರಡೂ ಅರ್ಥವಾಗುತ್ತದೆ.'
+              : '💡 Speak clearly near the mic. Both Kannada and English are understood.')}
+        </ThemedText>
+      </View>
+    </View>
+  );
+}
 
-        if (!uri) {
-          setIsTranscribing(false);
-          return;
-        }
+// ─── Main exported component ───
+export function VoiceTextInput({
+  containerStyle,
+  inputStyle,
+  voiceCategory = 'general',
+  voiceTitle,
+  value,
+  onChangeText,
+  placeholder,
+  onVoiceSubmitted,
+  ...props
+}: VoiceTextInputProps) {
+  const { language, t } = useLanguage();
+  const [modalVisible, setModalVisible] = useState(false);
 
-        // Convert audio URI to base64
-        const resp = await fetch(uri);
-        const blob = await resp.blob();
+  const openModal = () => setModalVisible(true);
 
-        const base64Audio = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            const res = reader.result as string;
-            const b64 = res.includes(',') ? res.split(',')[1] : res;
-            resolve(b64);
-          };
-          reader.onerror = reject;
-          reader.readAsDataURL(blob);
-        });
-
-        if (!base64Audio) {
-          throw new Error('Audio conversion failed');
-        }
-
-        // Call Google Gemini 2.5 Flash for audio transcription in Kannada / English
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
-        const geminiResp = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [
-              {
-                parts: [
-                  {
-                    text: `You are an expert speech recognition transcriber for an Indian farming app named AgroSense AI.
-The user is a farmer speaking into their phone in either Kannada (ಕನ್ನಡ) or Indian English.
-Category: ${voiceCategory}.
-Task: Transcribe the spoken audio with 100% accuracy into text.
-- If spoken in Kannada, output Kannada text (e.g. ಮಂಡ್ಯ, ಟೊಮ್ಯಾಟೊ, ರಾಗಿ, 2.5).
-- If spoken in English, output English text (e.g. Mandya, Tomato, Ragi, 2.5).
-- If it is a number/measurement, output the clean number.
-- Output ONLY the transcribed words or value. DO NOT output any introductory or polite text, NO markdown, NO quotes.`,
-                  },
-                  {
-                    inline_data: {
-                      mime_type: 'audio/m4a',
-                      data: base64Audio,
-                    },
-                  },
-                ],
-              },
-            ],
-          }),
-        });
-
-        const json = await geminiResp.json();
-        const transcribed = json?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-        console.log('Gemini speech transcription result:', transcribed);
-
-        if (transcribed) {
-          setSpokenText(transcribed);
-        } else {
-          setVoiceError(
-            language === 'kn'
-              ? 'ಸ್ಪಷ್ಟವಾಗಿ ಕೇಳಿಸಲಿಲ್ಲ. ದಯವಿಟ್ಟು ಮತ್ತೊಮ್ಮೆ ಮಾತನಾಡಿ.'
-              : 'Could not clearly recognize speech. Please try speaking again.'
-          );
-        }
-      } catch (err: any) {
-        console.log('Transcription error:', err);
-        setVoiceError(
-          language === 'kn'
-            ? 'ಧ್ವನಿ ಗುರುತಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ. ದಯವಿಟ್ಟು ಪುನಃ ಮಾತನಾಡಿ ಅಥವಾ ಕೆಳಗಿನ ಆಯ್ಕೆಗಳನ್ನು ಬಳಸಿ.'
-            : 'Could not transcribe speech. Try again or tap a suggestion below.'
-        );
-      } finally {
-        setIsTranscribing(false);
-      }
-    }
-  };
-
-  const openVoiceModal = () => {
-    setSpokenText(value || '');
-    setVoiceError('');
-    setModalVisible(true);
-    startListening();
-  };
-
-  const handleConfirm = () => {
-    if (isRecording) {
-      stopListeningAndTranscribe();
-    }
-    if (spokenText.trim()) {
-      onChangeText?.(spokenText.trim());
+  const handleConfirm = (text: string) => {
+    if (text) {
+      onChangeText?.(text);
+      onVoiceSubmitted?.(text);
     }
     setModalVisible(false);
   };
 
-  const handleSuggestionPress = (text: string) => {
-    const cleanText = text.includes(' (') ? text.split(' (')[0] : text;
-    setSpokenText(cleanText);
-    onChangeText?.(cleanText);
-    if (isRecording) {
-      if (timerRef.current) clearInterval(timerRef.current);
-      if (recorder) {
-        try {
-          recorder.stop();
-        } catch {}
-      }
-      setIsRecording(false);
-    }
+  const handleClose = () => {
     setModalVisible(false);
-  };
-
-  const formatTimer = (seconds: number) => {
-    const m = Math.floor(seconds / 60)
-      .toString()
-      .padStart(2, '0');
-    const s = (seconds % 60).toString().padStart(2, '0');
-    return `${m}:${s}`;
   };
 
   return (
@@ -324,159 +569,35 @@ Task: Transcribe the spoken audio with 100% accuracy into text.
         {...props}
       />
 
-      {/* Embedded Voice Mic Button */}
+      {/* Mic button overlaid on the right of the input */}
       <Pressable
         style={styles.voiceButton}
-        onPress={openVoiceModal}
+        onPress={openModal}
         hitSlop={8}
-        accessibilityLabel="Voice Input"
+        accessibilityLabel={language === 'kn' ? 'ಧ್ವನಿ ಇನ್‌ಪುಟ್' : 'Voice Input'}
       >
         <ThemedText style={styles.voiceIcon}>🎙️</ThemedText>
       </Pressable>
 
-      {/* Voice Assistant Modal */}
+      {/* Voice Modal — inner content only mounts when visible */}
       <Modal
         visible={modalVisible}
         transparent
-        animationType="fade"
-        onRequestClose={() => {
-          if (isRecording) stopListeningAndTranscribe();
-          setModalVisible(false);
-        }}
+        animationType="slide"
+        onRequestClose={handleClose}
       >
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            {/* Header */}
-            <View style={styles.modalHeader}>
-              <ThemedText style={styles.modalTitle}>
-                {voiceTitle || t('voiceTitle')}
-              </ThemedText>
-              <Pressable
-                onPress={() => {
-                  if (isRecording) stopListeningAndTranscribe();
-                  setModalVisible(false);
-                }}
-                style={styles.closeBtn}
-              >
-                <ThemedText style={styles.closeBtnText}>✕</ThemedText>
-              </Pressable>
-            </View>
-
-            {/* Listening & Recording Visualizer */}
-            <View style={styles.visualizerContainer}>
-              <View
-                style={[
-                  styles.pulsingCircle,
-                  isRecording && styles.pulsingCircleActive,
-                ]}
-              >
-                <ThemedText style={styles.largeMic}>🎙️</ThemedText>
-              </View>
-
-              {isTranscribing ? (
-                <View style={styles.transcribingRow}>
-                  <ActivityIndicator color="#2E7D32" size="small" />
-                  <ThemedText style={styles.transcribingText}>
-                    {language === 'kn' ? 'ಎಐ ಗುರುತಿಸುತ್ತಿದೆ...' : 'AI Transcribing voice...'}
-                  </ThemedText>
-                </View>
-              ) : (
-                <ThemedText style={styles.listeningText}>
-                  {isRecording
-                    ? `🔴 ${language === 'kn' ? 'ಆಲಿಸಲಾಗುತ್ತಿದೆ' : 'Listening...'} (${formatTimer(recordingSeconds)})`
-                    : t('voiceTapToSpeak')}
-                </ThemedText>
-              )}
-
-              <ThemedText style={styles.languageIndicator}>
-                {language === 'kn' ? 'ಭಾಷೆ: ಕನ್ನಡ (Kannada)' : 'Language: English'}
-              </ThemedText>
-            </View>
-
-            {/* Spoken Text Display */}
-            <View style={styles.spokenTextCard}>
-              <TextInput
-                style={styles.spokenTextInput}
-                value={spokenText}
-                onChangeText={setSpokenText}
-                placeholder={
-                  language === 'kn'
-                    ? 'ನೀವು ಮಾತನಾಡಿದ ಪದ ಇಲ್ಲಿ ಮೂಡಿಬರುತ್ತದೆ...'
-                    : 'Spoken words appear here...'
-                }
-                placeholderTextColor="#888"
-                multiline
-              />
-            </View>
-
-            {voiceError ? (
-              <ThemedText style={styles.errorText}>{voiceError}</ThemedText>
-            ) : null}
-
-            {/* Voice Control Buttons */}
-            <View style={styles.voiceControlRow}>
-              {isRecording ? (
-                <Pressable
-                  style={[styles.actionBtn, styles.stopBtn]}
-                  onPress={stopListeningAndTranscribe}
-                >
-                  <ThemedText style={styles.actionBtnText}>
-                    ⏹️ {t('voiceStop')}
-                  </ThemedText>
-                </Pressable>
-              ) : (
-                <Pressable
-                  style={[styles.actionBtn, styles.listenBtn]}
-                  onPress={startListening}
-                >
-                  <ThemedText style={styles.actionBtnText}>
-                    🎙️ {t('voiceTapToSpeak')}
-                  </ThemedText>
-                </Pressable>
-              )}
-
-              <Pressable
-                style={[styles.actionBtn, styles.confirmBtn]}
-                onPress={handleConfirm}
-                disabled={isTranscribing}
-              >
-                <ThemedText style={styles.actionBtnText}>
-                  ✓ {t('voiceConfirm')}
-                </ThemedText>
-              </Pressable>
-            </View>
-
-            {/* Quick Voice Suggestions */}
-            <View style={styles.suggestionsSection}>
-              <ThemedText style={styles.suggestionsTitle}>
-                {t('voiceSuggestions')}
-              </ThemedText>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.suggestionsList}
-              >
-                {getSuggestions().map((item, idx) => (
-                  <Pressable
-                    key={idx}
-                    style={styles.suggestionChip}
-                    onPress={() => handleSuggestionPress(item)}
-                  >
-                    <ThemedText style={styles.suggestionText}>
-                      🗣️ {item}
-                    </ThemedText>
-                  </Pressable>
-                ))}
-              </ScrollView>
-            </View>
-
-            {/* Keyboard Mic Tip for Farmers */}
-            <View style={styles.tipBox}>
-              <ThemedText style={styles.tipBoxText}>
-                {t('voiceKeyboardTip')}
-              </ThemedText>
-            </View>
-          </View>
+          {modalVisible && (
+            <VoiceModalContent
+              voiceCategory={voiceCategory}
+              voiceTitle={voiceTitle}
+              language={language}
+              t={t}
+              onConfirm={handleConfirm}
+              onClose={handleClose}
+              initialText={value || ''}
+            />
+          )}
         </View>
       </Modal>
     </View>
@@ -513,27 +634,26 @@ const styles = StyleSheet.create({
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.65)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: Spacing.three,
+    justifyContent: 'flex-end',
+    paddingHorizontal: Spacing.three,
+    paddingBottom: Spacing.three,
   },
   modalContent: {
     width: '100%',
-    maxWidth: 420,
     backgroundColor: '#ffffff',
-    borderRadius: 20,
+    borderRadius: 24,
     padding: Spacing.four,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 10,
-    elevation: 8,
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    elevation: 10,
   },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: Spacing.two,
+    marginBottom: Spacing.one,
   },
   modalTitle: {
     fontSize: 18,
@@ -553,49 +673,57 @@ const styles = StyleSheet.create({
     color: '#555',
     fontWeight: 'bold',
   },
+  modeBadge: {
+    fontSize: 11,
+    color: '#1565C0',
+    fontWeight: '600',
+    backgroundColor: '#E3F2FD',
+    alignSelf: 'flex-start',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    marginBottom: Spacing.one,
+    overflow: 'hidden',
+  },
   visualizerContainer: {
     alignItems: 'center',
     marginVertical: Spacing.two,
   },
   pulsingCircle: {
-    width: 76,
-    height: 76,
-    borderRadius: 38,
+    width: 80,
+    height: 80,
+    borderRadius: 40,
     backgroundColor: '#E8F5E9',
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 3,
     borderColor: '#C8E6C9',
+    marginBottom: 8,
   },
   pulsingCircleActive: {
     borderColor: '#D32F2F',
     backgroundColor: '#FFEBEE',
-    transform: [{ scale: 1.08 }],
+    transform: [{ scale: 1.1 }],
   },
   largeMic: {
-    fontSize: 34,
-  },
-  listeningText: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#2E7D32',
-    marginTop: 8,
+    fontSize: 36,
   },
   transcribingRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginTop: 8,
   },
-  transcribingText: {
+  listeningText: {
     fontSize: 14,
-    color: '#2E7D32',
     fontWeight: '600',
+    color: '#2E7D32',
+    marginTop: 4,
+    textAlign: 'center',
   },
   languageIndicator: {
-    fontSize: 12,
-    color: '#666',
-    marginTop: 2,
+    fontSize: 11,
+    color: '#888',
+    marginTop: 4,
   },
   spokenTextCard: {
     backgroundColor: '#F5F5F5',
@@ -625,15 +753,15 @@ const styles = StyleSheet.create({
   },
   actionBtn: {
     flex: 1,
-    paddingVertical: 12,
-    borderRadius: 10,
+    paddingVertical: 13,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
   },
   actionBtnText: {
     color: '#ffffff',
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   stopBtn: {
     backgroundColor: '#D32F2F',
@@ -645,7 +773,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#1565C0',
   },
   suggestionsSection: {
-    marginTop: Spacing.two,
+    marginTop: Spacing.one,
   },
   suggestionsTitle: {
     fontSize: 12,
@@ -671,7 +799,7 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   tipBox: {
-    marginTop: Spacing.three,
+    marginTop: Spacing.two,
     padding: Spacing.two,
     backgroundColor: '#FFFDE7',
     borderRadius: 8,
