@@ -1,7 +1,9 @@
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { VoiceTextInput } from '@/components/voice-text-input';
 import { MaxContentWidth, Spacing } from '@/constants/theme';
 import { useFarm } from '@/context/farm-context';
+import { useLanguage } from '@/context/language-context';
 import { CROP_DATABASE, getDeficiencyAdvice, interpretSoilData } from '@/utils/crop-logic';
 import * as ImagePicker from 'expo-image-picker';
 import { router } from 'expo-router';
@@ -44,6 +46,7 @@ type AnalysisResult = {
 };
 
 export default function DiseaseDetectorScreen() {
+  const { language, t } = useLanguage();
   const { soilData, previousCrop, incrementScansDone } = useFarm();
 
   const [cropName, setCropName] = useState(previousCrop || '');
@@ -261,9 +264,13 @@ If the photo is unclear or doesn't show a plant well enough to diagnose, set cat
           </View>
 
           <View style={styles.customRow}>
-            <TextInput
+            <VoiceTextInput
               style={styles.customInput}
-              placeholder="Or type crop name..."
+              placeholder={
+                language === 'kn'
+                  ? 'ಅಥವಾ ಬೆಳೆಯ ಹೆಸರು ಹೇಳಿ / ಟೈಪ್ ಮಾಡಿ...'
+                  : 'Or type / speak crop name...'
+              }
               placeholderTextColor="#999"
               value={customCropName}
               onChangeText={(text) => {
@@ -271,6 +278,8 @@ If the photo is unclear or doesn't show a plant well enough to diagnose, set cat
                 setCropName(text);
                 setError('');
               }}
+              voiceCategory="crop"
+              voiceTitle={language === 'kn' ? 'ಬೆಳೆಯ ಹೆಸರು ಹೇಳಿ' : 'Speak Plant / Crop Name'}
               returnKeyType="done"
             />
           </View>

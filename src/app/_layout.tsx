@@ -1,6 +1,7 @@
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { AuthProvider, useAuth } from '@/context/auth-context';
 import { FarmProvider } from '@/context/farm-context';
+import { LanguageProvider } from '@/context/language-context';
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useColorScheme } from 'react-native';
@@ -31,9 +32,11 @@ export default function RootLayout() {
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
       <AnimatedSplashOverlay />
       <AuthProvider>
-        <FarmProvider>
-          <RootNavigator />
-        </FarmProvider>
+        <LanguageProvider>
+          <FarmProvider>
+            <RootNavigator />
+          </FarmProvider>
+        </LanguageProvider>
       </AuthProvider>
     </ThemeProvider>
   );

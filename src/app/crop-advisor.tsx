@@ -15,6 +15,8 @@ import {
   Season
 } from '@/utils/crop-logic';
 import { getApproximateCropFertilizerPlan, getSoilBasedFertilizerGuidance, NutrientStatus } from '@/utils/fertilizer-calculator';
+import { VoiceTextInput } from '@/components/voice-text-input';
+import { useLanguage } from '@/context/language-context';
 import { router } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
@@ -51,6 +53,7 @@ const CATEGORY_LABELS: Record<CropCategory, string> = {
 };
 
 export default function CropAdvisorScreen() {
+  const { language, t } = useLanguage();
   const { soilData, previousCrop, region, incrementCropsTracked } = useFarm();
   const [season, setSeason] = useState<Season>('kharif');
   const [cropGoal, setCropGoal] = useState<CropGoal>('any');
@@ -197,61 +200,111 @@ export default function CropAdvisorScreen() {
           </ThemedText>
           <View style={styles.climateInputsRow}>
             <View style={styles.climateInputGroup}>
-              <ThemedText type="small" style={styles.climateLabel}>Average temperature (°C)</ThemedText>
-              <TextInput
+              <ThemedText type="small" style={styles.climateLabel}>
+                {language === 'kn' ? 'ಸರಾಸರಿ ತಾಪಮಾನ (°C)' : 'Average temperature (°C)'}
+              </ThemedText>
+              <VoiceTextInput
                 value={averageTemperature}
                 onChangeText={setAverageTemperature}
                 keyboardType="decimal-pad"
                 placeholder="e.g. 25"
                 placeholderTextColor="#888"
                 style={styles.climateInput}
+                voiceCategory="number"
+                voiceTitle={language === 'kn' ? 'ತಾಪಮಾನ ಹೇಳಿ (°C)' : 'Speak Temperature (°C)'}
                 accessibilityLabel="Average temperature in degrees Celsius"
               />
             </View>
             <View style={styles.climateInputGroup}>
-              <ThemedText type="small" style={styles.climateLabel}>Annual rainfall (mm)</ThemedText>
-              <TextInput
+              <ThemedText type="small" style={styles.climateLabel}>
+                {language === 'kn' ? 'ವಾರ್ಷಿಕ ಮಳೆ (mm)' : 'Annual rainfall (mm)'}
+              </ThemedText>
+              <VoiceTextInput
                 value={annualRainfall}
                 onChangeText={setAnnualRainfall}
                 keyboardType="number-pad"
                 placeholder="e.g. 900"
                 placeholderTextColor="#888"
                 style={styles.climateInput}
+                voiceCategory="number"
+                voiceTitle={language === 'kn' ? 'ವಾರ್ಷಿಕ ಮಳೆ ಹೇಳಿ (mm)' : 'Speak Annual Rainfall (mm)'}
                 accessibilityLabel="Annual rainfall in millimeters"
               />
             </View>
             <View style={styles.climateInputGroup}>
-              <ThemedText type="small" style={styles.climateLabel}>Altitude (m)</ThemedText>
-              <TextInput
+              <ThemedText type="small" style={styles.climateLabel}>
+                {language === 'kn' ? 'ಸಮುದ್ರ ಮಟ್ಟದಿಂದ ಎತ್ತರ (m)' : 'Altitude (m)'}
+              </ThemedText>
+              <VoiceTextInput
                 value={altitude}
                 onChangeText={setAltitude}
                 keyboardType="number-pad"
                 placeholder="e.g. 800"
                 placeholderTextColor="#888"
                 style={styles.climateInput}
+                voiceCategory="number"
+                voiceTitle={language === 'kn' ? 'ಎತ್ತರ ಹೇಳಿ (ಮೀಟರ್)' : 'Speak Altitude (m)'}
                 accessibilityLabel="Altitude in meters above sea level"
               />
             </View>
           </View>
 
           <ThemedText type="small" style={styles.sectionTitle}>
-            FARM DETAILS FOR FERTILIZER PLANNING
+            {language === 'kn' ? 'ರಸಗೊಬ್ಬರ ಯೋಜನೆಗಾಗಿ ಜಮೀನಿನ ವಿವರಗಳು' : 'FARM DETAILS FOR FERTILIZER PLANNING'}
           </ThemedText>
           <ThemedText style={styles.helperText}>
-            Enter your cultivated area and water source. If you have a soil-lab report, add its available phosphorus and potassium values in kg/ha. Leave them blank if you do not know them.
+            {language === 'kn'
+              ? 'ನಿಮ್ಮ ಕೃಷಿ ವಿಸ್ತೀರ್ಣ ಮತ್ತು ನೀರಿನ ಲಭ್ಯತೆಯನ್ನು ನಮೂದಿಸಿ. ಮಣ್ಣಿನ ಪರೀಕ್ಷಾ ವರದಿ ಇದ್ದರೆ ರಂಜಕ (P) ಮತ್ತು ಪೊಟ್ಯಾಶ್ (K) ಪ್ರಮಾಣವನ್ನು ನಮೂದಿಸಿ.'
+              : 'Enter your cultivated area and water source. If you have a soil-lab report, add its available phosphorus and potassium values in kg/ha.'}
           </ThemedText>
           <View style={styles.climateInputsRow}>
             <View style={styles.climateInputGroup}>
-              <ThemedText type="small" style={styles.climateLabel}>Farm area (acres)</ThemedText>
-              <TextInput value={farmAreaAcres} onChangeText={setFarmAreaAcres} keyboardType="decimal-pad" placeholder="e.g. 2.5" placeholderTextColor="#888" style={styles.climateInput} accessibilityLabel="Farm area in acres" />
+              <ThemedText type="small" style={styles.climateLabel}>
+                {language === 'kn' ? 'ಜಮೀನಿನ ವಿಸ್ತೀರ್ಣ (ಎಕರೆ)' : 'Farm area (acres)'}
+              </ThemedText>
+              <VoiceTextInput
+                value={farmAreaAcres}
+                onChangeText={setFarmAreaAcres}
+                keyboardType="decimal-pad"
+                placeholder="e.g. 2.5"
+                placeholderTextColor="#888"
+                style={styles.climateInput}
+                voiceCategory="number"
+                voiceTitle={language === 'kn' ? 'ವಿಸ್ತೀರ್ಣ ಹೇಳಿ (ಎಕರೆ)' : 'Speak Farm Area (Acres)'}
+                accessibilityLabel="Farm area in acres"
+              />
             </View>
             <View style={styles.climateInputGroup}>
-              <ThemedText type="small" style={styles.climateLabel}>Soil-test phosphorus (kg/ha)</ThemedText>
-              <TextInput value={soilPhosphorus} onChangeText={setSoilPhosphorus} keyboardType="decimal-pad" placeholder="Optional" placeholderTextColor="#888" style={styles.climateInput} accessibilityLabel="Soil test phosphorus in kilograms per hectare" />
+              <ThemedText type="small" style={styles.climateLabel}>
+                {language === 'kn' ? 'ರಂಜಕ (P) (kg/ha)' : 'Soil-test phosphorus (kg/ha)'}
+              </ThemedText>
+              <VoiceTextInput
+                value={soilPhosphorus}
+                onChangeText={setSoilPhosphorus}
+                keyboardType="decimal-pad"
+                placeholder={language === 'kn' ? 'ಐಚ್ಛಿಕ' : 'Optional'}
+                placeholderTextColor="#888"
+                style={styles.climateInput}
+                voiceCategory="number"
+                voiceTitle={language === 'kn' ? 'ರಂಜಕ ಪ್ರಮಾಣ (kg/ha)' : 'Speak Soil Phosphorus'}
+                accessibilityLabel="Soil test phosphorus in kilograms per hectare"
+              />
             </View>
             <View style={styles.climateInputGroup}>
-              <ThemedText type="small" style={styles.climateLabel}>Soil-test potassium (kg/ha)</ThemedText>
-              <TextInput value={soilPotassium} onChangeText={setSoilPotassium} keyboardType="decimal-pad" placeholder="Optional" placeholderTextColor="#888" style={styles.climateInput} accessibilityLabel="Soil test potassium in kilograms per hectare" />
+              <ThemedText type="small" style={styles.climateLabel}>
+                {language === 'kn' ? 'ಪೊಟ್ಯಾಶ್ (K) (kg/ha)' : 'Soil-test potassium (kg/ha)'}
+              </ThemedText>
+              <VoiceTextInput
+                value={soilPotassium}
+                onChangeText={setSoilPotassium}
+                keyboardType="decimal-pad"
+                placeholder={language === 'kn' ? 'ಐಚ್ಛಿಕ' : 'Optional'}
+                placeholderTextColor="#888"
+                style={styles.climateInput}
+                voiceCategory="number"
+                voiceTitle={language === 'kn' ? 'ಪೊಟ್ಯಾಶ್ ಪ್ರಮಾಣ (kg/ha)' : 'Speak Soil Potassium'}
+                accessibilityLabel="Soil test potassium in kilograms per hectare"
+              />
             </View>
           </View>
           <ThemedText type="small" style={styles.climateLabel}>Water availability</ThemedText>
@@ -305,19 +358,27 @@ export default function CropAdvisorScreen() {
 
           {hasCropInMind === true && (
             <View style={{ gap: Spacing.two }}>
-              <TextInput
+              <VoiceTextInput
                 value={plannedCropText}
                 onChangeText={(t) => {
                   setPlannedCropText(t);
                   setPlannedSearched(false);
                 }}
-                placeholder="Type the crop, e.g. Tomato, Maize, Rice"
+                placeholder={
+                  language === 'kn'
+                    ? 'ಬೆಳೆ ಹೆಸರು ನಮೂದಿಸಿ, ಉದಾ: ಟೊಮ್ಯಾಟೊ, ಭತ್ತ, ರಾಗಿ'
+                    : 'Type or speak crop, e.g. Tomato, Maize, Rice'
+                }
                 placeholderTextColor="#888"
                 style={styles.climateInput}
+                voiceCategory="crop"
+                voiceTitle={language === 'kn' ? 'ಬೆಳೆಯ ಹೆಸರು ಹೇಳಿ' : 'Speak Crop Name'}
                 accessibilityLabel="Crop you plan to grow"
               />
               <Pressable style={styles.generateButton} onPress={findPlannedCrop}>
-                <ThemedText style={styles.generateButtonText}>Get Fertilizer Suggestions</ThemedText>
+                <ThemedText style={styles.generateButtonText}>
+                  {language === 'kn' ? 'ರಸಗೊಬ್ಬರ ಸಲಹೆಗಳನ್ನು ಪಡೆಯಿರಿ' : 'Get Fertilizer Suggestions'}
+                </ThemedText>
               </Pressable>
 
               {plannedSearched && !plannedCrop && (

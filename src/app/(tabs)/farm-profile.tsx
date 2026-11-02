@@ -1,13 +1,16 @@
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { VoiceTextInput } from '@/components/voice-text-input';
 import { MaxContentWidth, Spacing } from '@/constants/theme';
 import { useFarm } from '@/context/farm-context';
+import { useLanguage } from '@/context/language-context';
 import { CROP_DATABASE } from '@/utils/crop-logic';
 import { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 export default function FarmProfileScreen() {
+  const { language, t } = useLanguage();
   const { previousCrop, setPreviousCrop, soilData, manualSoilTest, setManualSoilTest } = useFarm();
   const [customCrop, setCustomCrop] = useState('');
 
@@ -24,14 +27,14 @@ export default function FarmProfileScreen() {
       <SafeAreaView style={styles.safeArea} edges={['top']}>
         <ScrollView contentContainerStyle={styles.scrollContent}>
           <ThemedText type="title" style={styles.title}>
-            Farm Profile
+            {t('farmProfileTitle')}
           </ThemedText>
           <ThemedText type="small" style={styles.subtitle}>
-            This helps AgroSense AI give you better crop and rotation advice.
+            {t('farmProfileSubtitle')}
           </ThemedText>
 
           <ThemedText type="small" style={styles.sectionTitle}>
-            WHAT DID YOU GROW LAST SEASON?
+            {t('lastSeasonCrop')}
           </ThemedText>
 
           <View style={styles.chipRow}>
@@ -40,7 +43,7 @@ export default function FarmProfileScreen() {
               onPress={() => setPreviousCrop('')}
             >
               <ThemedText style={[styles.chipText, previousCrop === '' && styles.chipTextSelected]}>
-                None / First Season
+                {t('noneFirstSeason')}
               </ThemedText>
             </Pressable>
             {CROP_DATABASE.map((crop) => (
@@ -59,59 +62,66 @@ export default function FarmProfileScreen() {
           </View>
 
           <ThemedText type="small" style={styles.sectionTitle}>
-            OR TYPE YOUR CROP
+            {t('orTypeCrop')}
           </ThemedText>
           <View style={styles.customRow}>
-            <TextInput
-              style={styles.customInput}
-              placeholder="e.g. Turmeric, Jowar, Sesame..."
-              placeholderTextColor="#999"
-              value={customCrop}
-              onChangeText={setCustomCrop}
-              onSubmitEditing={submitCustomCrop}
-              returnKeyType="done"
-            />
+            <View style={{ flex: 1 }}>
+              <VoiceTextInput
+                style={styles.customInput}
+                placeholder={t('cropPlaceholder')}
+                placeholderTextColor="#999"
+                value={customCrop}
+                onChangeText={setCustomCrop}
+                onSubmitEditing={submitCustomCrop}
+                returnKeyType="done"
+                voiceCategory="crop"
+                voiceTitle={language === 'kn' ? 'ಬೆಳೆಯ ಹೆಸರು ಹೇಳಿ' : 'Speak Crop Name'}
+              />
+            </View>
             <Pressable style={styles.addButton} onPress={submitCustomCrop}>
-              <ThemedText style={styles.addButtonText}>Save</ThemedText>
+              <ThemedText style={styles.addButtonText}>{t('save')}</ThemedText>
             </Pressable>
           </View>
 
           {previousCrop !== '' && (
             <View style={styles.confirmCard}>
               <ThemedText style={styles.confirmText}>
-                ✓ Saved — your last crop was <ThemedText style={styles.confirmBold}>{previousCrop}</ThemedText>.
-                Crop Advisor will use this automatically.
+                {t('savedConfirm')}{' '}
+                <ThemedText style={styles.confirmBold}>{previousCrop}</ThemedText>.
               </ThemedText>
             </View>
           )}
 
           <View style={styles.statusCard}>
-            <ThemedText style={styles.statusLabel}>Soil data status</ThemedText>
+            <ThemedText style={styles.statusLabel}>{t('soilDataStatus')}</ThemedText>
             <ThemedText type="small" style={styles.statusValue}>
-              {soilData ? '✓ Loaded from Soil Map tab' : 'Not loaded yet — visit the Soil Map tab'}
+              {soilData ? t('soilLoaded') : t('soilNotLoaded')}
             </ThemedText>
           </View>
 
           <ThemedText type="small" style={styles.sectionTitle}>
-            HAVE A LAB SOIL TEST REPORT?
+            {language === 'kn'
+              ? 'ಪ್ರಯೋಗಾಲಯ ಮಣ್ಣು ಪರೀಕ್ಷಾ ವರದಿ ಇದೆಯೇ?'
+              : 'HAVE A LAB SOIL TEST REPORT?'}
           </ThemedText>
           <ThemedText type="small" style={styles.subtitle}>
-            Satellite data can't measure Phosphorus, Potassium, or Calcium accurately. If you
-            don't have a soil test report, that's completely fine — leave these blank and
-            AgroSense AI will use standard regional fertilizer guidelines instead. This section
-            is only for extra precision if you happen to have the numbers.
+            {language === 'kn'
+              ? 'ಉಪಗ್ರಹ ದತ್ತಾಂಶವು ರಂಜಕ ಮತ್ತು ಪೊಟ್ಯಾಶ್ ಅನ್ನು ಅಳೆಯಲು ಸಾಧ್ಯವಿಲ್ಲ. ವರದಿ ಇಲ್ಲದಿದ್ದರೆ ಇವುಗಳನ್ನು ಖಾಲಿ ಬಿಡಿ — ಆಗ್ರೋಸೆನ್ಸ್ ಎಐ ಪ್ರಾದೇಶಿಕ ಮಾರ್ಗಸೂಚಿಗಳನ್ನು ಬಳಸುತ್ತದೆ.'
+              : "Satellite data can't measure Phosphorus, Potassium, or Calcium accurately. If you don't have a soil test report, leave these blank and AgroSense AI will use regional guidelines."}
           </ThemedText>
           <View style={styles.infoCard}>
             <ThemedText type="small" style={styles.infoText}>
-              💡 Don't have a soil test? Most states offer free or subsidized testing through
-              your nearest Krishi Vigyan Kendra (KVK) or the Soil Health Card scheme — ask your
-              local agriculture office.
+              {language === 'kn'
+                ? '💡 ಸೂಚನೆ: ನಿಮ್ಮ ಹತ್ತಿರದ ಕೃಷಿ ವಿಜ್ಞಾನ ಕೇಂದ್ರ (KVK) ಅಥವಾ ರೈತ ಸಂಪರ್ಕ ಕೇಂದ್ರದಲ್ಲಿ ಮಣ್ಣು ಪರೀಕ್ಷೆ ಮಾಡಿಸಬಹುದು.'
+                : '💡 Tip: Free or subsidized testing is available through your nearest Krishi Vigyan Kendra (KVK) or Soil Health Card scheme.'}
             </ThemedText>
           </View>
 
           <View style={styles.testRow}>
-            <ThemedText style={styles.testLabel}>Phosphorus (P) — kg/ha</ThemedText>
-            <TextInput
+            <ThemedText style={styles.testLabel}>
+              {language === 'kn' ? 'ರಂಜಕ (Phosphorus - P) — kg/ha' : 'Phosphorus (P) — kg/ha'}
+            </ThemedText>
+            <VoiceTextInput
               style={styles.testInput}
               placeholder="e.g. 18"
               placeholderTextColor="#999"
@@ -120,12 +130,16 @@ export default function FarmProfileScreen() {
               onChangeText={(text) =>
                 setManualSoilTest({ ...manualSoilTest, phosphorus: text ? Number(text) : undefined })
               }
+              voiceCategory="number"
+              voiceTitle={language === 'kn' ? 'ರಂಜಕ ಪ್ರಮಾಣ ಹೇಳಿ (kg/ha)' : 'Speak Phosphorus (kg/ha)'}
             />
           </View>
 
           <View style={styles.testRow}>
-            <ThemedText style={styles.testLabel}>Potassium (K) — kg/ha</ThemedText>
-            <TextInput
+            <ThemedText style={styles.testLabel}>
+              {language === 'kn' ? 'ಪೊಟ್ಯಾಶ್ (Potassium - K) — kg/ha' : 'Potassium (K) — kg/ha'}
+            </ThemedText>
+            <VoiceTextInput
               style={styles.testInput}
               placeholder="e.g. 150"
               placeholderTextColor="#999"
@@ -134,12 +148,16 @@ export default function FarmProfileScreen() {
               onChangeText={(text) =>
                 setManualSoilTest({ ...manualSoilTest, potassium: text ? Number(text) : undefined })
               }
+              voiceCategory="number"
+              voiceTitle={language === 'kn' ? 'ಪೊಟ್ಯಾಶ್ ಪ್ರಮಾಣ ಹೇಳಿ (kg/ha)' : 'Speak Potassium (kg/ha)'}
             />
           </View>
 
           <View style={styles.testRow}>
-            <ThemedText style={styles.testLabel}>Calcium (Ca) — ppm</ThemedText>
-            <TextInput
+            <ThemedText style={styles.testLabel}>
+              {language === 'kn' ? 'ಕ್ಯಾಲ್ಸಿಯಂ (Calcium - Ca) — ppm' : 'Calcium (Ca) — ppm'}
+            </ThemedText>
+            <VoiceTextInput
               style={styles.testInput}
               placeholder="e.g. 1200"
               placeholderTextColor="#999"
@@ -148,6 +166,8 @@ export default function FarmProfileScreen() {
               onChangeText={(text) =>
                 setManualSoilTest({ ...manualSoilTest, calcium: text ? Number(text) : undefined })
               }
+              voiceCategory="number"
+              voiceTitle={language === 'kn' ? 'ಕ್ಯಾಲ್ಸಿಯಂ ಪ್ರಮಾಣ ಹೇಳಿ (ppm)' : 'Speak Calcium (ppm)'}
             />
           </View>
         </ScrollView>
@@ -200,85 +220,88 @@ const styles = StyleSheet.create({
   },
   chipTextSelected: {
     color: '#fff',
+    fontWeight: '600',
   },
   customRow: {
     flexDirection: 'row',
     gap: Spacing.two,
+    alignItems: 'center',
   },
   customInput: {
-    flex: 1,
-    height: 42,
+    height: 44,
     borderRadius: Spacing.two,
     paddingHorizontal: Spacing.three,
-    backgroundColor: 'rgba(128,128,128,0.1)',
+    borderWidth: 1,
+    borderColor: '#ccc',
     fontSize: 14,
+    backgroundColor: '#fafafa',
   },
   addButton: {
-    backgroundColor: '#1565C0',
+    backgroundColor: '#2E7D32',
     borderRadius: Spacing.two,
     paddingHorizontal: Spacing.three,
+    height: 44,
     justifyContent: 'center',
+    alignItems: 'center',
   },
   addButtonText: {
     color: '#fff',
     fontWeight: '600',
   },
   confirmCard: {
-    backgroundColor: 'rgba(46, 125, 50, 0.12)',
+    backgroundColor: 'rgba(46, 125, 50, 0.1)',
     borderRadius: Spacing.two,
     padding: Spacing.three,
     borderLeftWidth: 3,
     borderLeftColor: '#2E7D32',
-    marginTop: Spacing.two,
   },
   confirmText: {
     fontSize: 13,
-    lineHeight: 19,
+    color: '#2E7D32',
   },
   confirmBold: {
     fontWeight: '700',
+    color: '#2E7D32',
   },
   statusCard: {
-    backgroundColor: 'rgba(128,128,128,0.08)',
     borderRadius: Spacing.two,
     padding: Spacing.three,
-    marginTop: Spacing.three,
+    backgroundColor: 'rgba(128,128,128,0.08)',
+    gap: 4,
   },
   statusLabel: {
+    fontSize: 12,
+    opacity: 0.6,
     fontWeight: '600',
-    fontSize: 13,
-    marginBottom: 2,
   },
   statusValue: {
-    opacity: 0.7,
-  },
-  testRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: Spacing.two,
-  },
-  testLabel: {
-    flex: 1,
-    fontSize: 13,
-  },
-  testInput: {
-    width: 100,
-    height: 38,
-    borderRadius: Spacing.two,
-    paddingHorizontal: Spacing.two,
-    backgroundColor: 'rgba(128,128,128,0.1)',
-    fontSize: 14,
-    textAlign: 'right',
+    fontWeight: '500',
   },
   infoCard: {
-    backgroundColor: 'rgba(21, 101, 192, 0.1)',
+    backgroundColor: '#FFF9C4',
     borderRadius: Spacing.two,
-    padding: Spacing.two,
+    padding: Spacing.three,
     borderLeftWidth: 3,
-    borderLeftColor: '#1565C0',
+    borderLeftColor: '#FBC02D',
   },
   infoText: {
+    color: '#7F6000',
     lineHeight: 18,
+  },
+  testRow: {
+    gap: Spacing.one,
+  },
+  testLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  testInput: {
+    height: 44,
+    borderRadius: Spacing.two,
+    paddingHorizontal: Spacing.three,
+    borderWidth: 1,
+    borderColor: '#ccc',
+    fontSize: 14,
+    backgroundColor: '#fafafa',
   },
 });
