@@ -19,7 +19,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 // Confirmed free-tier as of writing. If you verify gemini-3.6-flash shows
 // "Free tier" for YOUR account in AI Studio, you can switch to it instead.
-const GEMINI_MODEL = 'gemini-3.6-flash';
+// If the first model is overloaded (503) even after retries, the next one is tried.
+const GEMINI_MODELS = ['gemini-3.6-flash', 'gemini-3.8-flash', 'gemini-3.5-flash-lite'];
 const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
 
 type Category =
@@ -128,11 +129,9 @@ Classify what you see and respond with ONLY valid JSON (no markdown, no code fen
 
 If the photo is unclear or doesn't show a plant well enough to diagnose, set category to "Uncertain" and confidence below 40 rather than guessing.`;
 
-    console.log('Using API key (first 10 chars):', GEMINI_API_KEY?.slice(0, 10));
-
     try {
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
+      const doFetch = (model: string) => fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
         {
           method: 'POST',
           headers: {
@@ -157,7 +156,23 @@ If the photo is unclear or doesn't show a plant well enough to diagnose, set cat
         }
       );
 
-      if (!response.ok) {
+      // Google sometimes returns 503 (model busy) or 429 (rate limit).
+      // Retry each model a few times, then fall back to the next model.
+      let response: Response | null = null;
+      for (const model of GEMINI_MODELS) {
+        for (let attempt = 0; attempt < 3; attempt++) {
+          response = await doFetch(model);
+          if (response.status !== 503 && response.status !== 429) break;
+          console.log(`Gemini ${model} busy (${response.status}), retry ${attempt + 1}/3...`);
+          await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+        }
+        // Stop when this model answered, or failed for a reason another model cannot fix.
+        if (response && response.status !== 503 && response.status !== 429 && response.status !== 404) break;
+        console.log(`Gemini ${model} unavailable (${response?.status}), trying next model...`);
+      }
+
+      if (!response || !response.ok) {
+        if (!response) throw new Error('No response');
         const errText = await response.text();
         throw new Error(errText);
       }
@@ -176,8 +191,11 @@ If the photo is unclear or doesn't show a plant well enough to diagnose, set cat
       }
     } catch (err: any) {
       console.log('Gemini analysis error:', err.message);
+      const busy = /"code":\s*(503|429)|UNAVAILABLE|RESOURCE_EXHAUSTED/.test(String(err.message));
       setError(
-        'Could not analyze photo. Check your API key, internet connection, and try again.'
+        busy
+          ? "Google's AI service is busy right now. Please wait a minute and try again."
+          : 'Could not analyze photo. Check your API key, internet connection, and try again.'
       );
     } finally {
       setLoading(false);

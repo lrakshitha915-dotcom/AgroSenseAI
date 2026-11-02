@@ -8,6 +8,40 @@ import { ActivityIndicator, Pressable, StyleSheet, TextInput, View } from 'react
 import MapView, { Marker, Polygon, Region } from 'react-native-maps';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+// AsyncStorage is optional here: if the package is missing the app still works, just without the cache.
+let AsyncStorage: any = null;
+try {
+  AsyncStorage = require('@react-native-async-storage/async-storage').default;
+} catch {}
+
+const CACHE_PREFIX = 'soilgrids_cache_v1:';
+const cacheKey = (lat: number, lon: number) => `${CACHE_PREFIX}${lat.toFixed(2)},${lon.toFixed(2)}`;
+
+// Typical topsoil of a loamy red soil, in the SAME raw format SoilGrids returns (value / d_factor = shown value).
+// Used ONLY when the person presses "Use sample soil data" while the SoilGrids server is down. It is demo data, not a reading.
+function buildSampleSoil() {
+  const layer = (name: string, raw: number, mapped: string, target: string, f: number) => ({
+    name,
+    unit_measure: { mapped_units: mapped, target_units: target, d_factor: f },
+    depths: [{ label: '0-5cm', values: { mean: raw } }],
+  });
+  return {
+    sample: true,
+    properties: {
+      layers: [
+        layer('nitrogen', 140, 'cg/kg', 'g/kg', 100),
+        layer('phh2o', 66, 'pH*10', 'pH', 10),
+        layer('soc', 120, 'dg/kg', 'g/kg', 10),
+        layer('clay', 280, 'g/kg', '%', 10),
+        layer('sand', 420, 'g/kg', '%', 10),
+        layer('silt', 300, 'g/kg', '%', 10),
+        layer('cec', 150, 'mmol(c)/kg', 'cmol(c)/kg', 10),
+        layer('bdod', 135, 'cg/cm3', 'kg/dm3', 100),
+      ],
+    },
+  };
+}
+
 const INDIA_REGION: Region = {
   latitude: 22.5937,
   longitude: 78.9629,
@@ -23,6 +57,8 @@ export default function MapScreen() {
   const [soilData, setSoilData] = useState<any>(null);
   const [loadingSoil, setLoadingSoil] = useState(false);
   const [soilError, setSoilError] = useState('');
+  const [soilNote, setSoilNote] = useState('');
+  const [lastCenter, setLastCenter] = useState<{ latitude: number; longitude: number } | null>(null);
 
   // --- Address search state ---
   const [address, setAddress] = useState('');
@@ -122,14 +158,64 @@ export default function MapScreen() {
     }
   }
 
+  // Stores the result in the screen and in the shared farm context, then finds district/state (free, no key).
+  function applySoil(json: any, center: { latitude: number; longitude: number }, note: string) {
+    setSoilData(json);
+    setSoilNote(note);
+    setSharedSoilData(json);
+    setSharedLatitude(center.latitude);
+    incrementFarmsMapped();
+    fetch(
+      `https://nominatim.openstreetmap.org/reverse?lat=${center.latitude}&lon=${center.longitude}&format=json&addressdetails=1`,
+      { headers: { 'User-Agent': 'AgroSenseAI/1.0' } }
+    )
+      .then((res) => res.json())
+      .then((revJson: any) => {
+        const addr = revJson.address ?? {};
+        const district = addr.state_district || addr.county || addr.city_district || '';
+        const state = addr.state || '';
+        if (district || state) setSharedRegion({ district, state });
+      })
+      .catch(() => {}); // non-critical
+  }
+
+  // fetch with a timeout so a hung server cannot freeze the button forever
+  async function fetchWithTimeout(url: string, ms = 20000) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), ms);
+    try {
+      return await fetch(url, { signal: ctrl.signal });
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
+  // Look for a real reading saved earlier for (almost) this spot
+  async function readCache(center: { latitude: number; longitude: number }) {
+    if (!AsyncStorage) return null;
+    try {
+      const raw = await AsyncStorage.getItem(cacheKey(center.latitude, center.longitude));
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function applySampleSoil() {
+    if (!lastCenter) return;
+    setSoilError('');
+    applySoil(buildSampleSoil(), lastCenter, 'SAMPLE DATA (demo): typical loamy red soil values, NOT a real reading for this spot.');
+  }
+
   // Soil fetch works off either the drawn rectangle's center OR the searched address point
   async function fetchSoilData(center: { latitude: number; longitude: number } | null) {
     if (!center) return;
 
     setLoadingSoil(true);
     setSoilError('');
+    setSoilNote('');
     setSoilData(null);
-    
+    setLastCenter(center);
 
     try {
       const properties = ['nitrogen', 'phh2o', 'soc', 'clay', 'sand', 'silt', 'cec', 'bdod'];
@@ -143,36 +229,60 @@ export default function MapScreen() {
       const url = `https://rest.isric.org/soilgrids/v2.0/properties/query?${params.toString()}`;
       console.log('SoilGrids URL:', url);
 
-      const response = await fetch(url);
-      if (!response.ok) {
-        console.log('SoilGrids failed:', response.status, await response.text());
-        throw new Error('SoilGrids API request failed');
+      // SoilGrids (ISRIC) is a free public server and often returns 503/429 when busy: retry a few times.
+      const isBusy = (st: number) => [429, 502, 503, 504].includes(st);
+      let response: Response | null = null;
+      for (let attempt = 0; attempt <= 4; attempt++) {
+        try {
+          response = await fetchWithTimeout(url);
+          if (!isBusy(response.status)) break;
+          console.log(`SoilGrids busy (${response.status}), retrying ${attempt + 1}/4...`);
+        } catch (e: any) {
+          response = null;
+          console.log(`SoilGrids request error (${e?.name}), retrying ${attempt + 1}/4...`);
+        }
+        if (attempt < 4) await new Promise((r) => setTimeout(r, 3000 * (attempt + 1)));
+      }
+      if (!response || !response.ok) {
+        console.log('SoilGrids failed:', response?.status);
+        throw new Error(!response || isBusy(response.status) ? 'BUSY' : 'SoilGrids API request failed');
       }
 
       const json = await response.json();
-      console.log('SoilGrids response:', JSON.stringify(json).slice(0, 300));
-      setSoilData(json);
-      setSharedSoilData(json);
-      setSharedLatitude(center.latitude);
-      incrementFarmsMapped();
-      // Reverse geocode to get district/state for regional crop matching (free, no key)
-      fetch(
-        `https://nominatim.openstreetmap.org/reverse?lat=${center.latitude}&lon=${center.longitude}&format=json&addressdetails=1`,
-        { headers: { 'User-Agent': 'AgroSenseAI/1.0' } }
-      )
-        .then((res) => res.json())
-        .then((revJson: any) => {
-          const addr = revJson.address ?? {};
-          const district = addr.state_district || addr.county || addr.city_district || '';
-          const state = addr.state || '';
-          if (district || state) {
-            setSharedRegion({ district, state });
-          }
-        })
-        .catch(() => {}); // non-critical, silently skip if this fails
+
+      // Log the returned units and conversion factors so the API's values can be verified.
+      const returnedLayers = json.properties?.layers ?? [];
+      console.log(
+        'SoilGrids property units:',
+        returnedLayers.map((layer: any) => ({
+          property: layer.name,
+          rawValue: layer.depths?.[0]?.values?.mean,
+          mappedUnits: layer.unit_measure?.mapped_units,
+          targetUnits: layer.unit_measure?.target_units,
+          conversionFactor: layer.unit_measure?.d_factor,
+        }))
+      );
+
+      // Save a real reading so the same spot still works when the server is down later (e.g. during a demo)
+      const hasReading = returnedLayers.some((l: any) => l.depths?.[0]?.values?.mean != null);
+      if (AsyncStorage && hasReading) {
+        AsyncStorage.setItem(cacheKey(center.latitude, center.longitude), JSON.stringify(json)).catch(() => {});
+      }
+      applySoil(json, center, '');
     } catch (err: any) {
       console.log('Soil fetch error:', err.message);
-      setSoilError('Could not fetch soil data. Check your internet connection and try again.');
+      if (err.message === 'BUSY') {
+        const cached = await readCache(center);
+        if (cached) {
+          applySoil(cached, center, 'Real SoilGrids reading saved earlier for this spot (the server is busy right now).');
+        } else {
+          setSoilError(
+            'The soil data server (SoilGrids) is busy right now. Wait a minute and tap Fetch Soil Data again, or tap "Use sample soil data" to continue with demo values.'
+          );
+        }
+      } else {
+        setSoilError('Could not fetch soil data. Check your internet connection and try again.');
+      }
     } finally {
       setLoadingSoil(false);
     }
@@ -256,6 +366,11 @@ export default function MapScreen() {
             </Pressable>
           )}
           {soilError ? <ThemedText style={styles.errorText}>{soilError}</ThemedText> : null}
+          {soilError && lastCenter ? (
+            <Pressable style={styles.sampleButton} onPress={applySampleSoil}>
+              <ThemedText style={styles.buttonText}>Use sample soil data (demo)</ThemedText>
+            </Pressable>
+          ) : null}
 
           {activeCenter && (
             <View style={styles.coordsCard}>
@@ -268,6 +383,7 @@ export default function MapScreen() {
           {soilData && (
             <View style={styles.resultsCard}>
               <ThemedText style={styles.resultsTitle}>Soil Data</ThemedText>
+              {soilNote ? <ThemedText style={styles.noteText}>{soilNote}</ThemedText> : null}
               {(() => {
                 const layers = soilData.properties?.layers ?? [];
                 const hasAnyReading = layers.some(
@@ -284,12 +400,18 @@ export default function MapScreen() {
                 }
                 return layers.map((layer: any) => {
                   const value = layer.depths?.[0]?.values?.mean;
-                  const unit = layer.unit_measure?.mapped_units ?? '';
+                  const conversionFactor = Number(layer.unit_measure?.d_factor ?? 1);
+                  const unit =
+                    layer.unit_measure?.target_units ?? layer.unit_measure?.mapped_units ?? '';
+                  const hasValidValue = value != null && Number.isFinite(Number(value));
+                  const hasValidFactor = Number.isFinite(conversionFactor) && conversionFactor !== 0;
                   const displayValue =
-                    value != null ? (value / (layer.unit_measure?.d_factor ?? 1)).toFixed(2) : 'N/A';
+                    hasValidValue && hasValidFactor
+                      ? (Number(value) / conversionFactor).toFixed(2)
+                      : 'N/A';
                   return (
                     <ThemedText key={layer.name} style={styles.resultRow}>
-                      {layer.name.toUpperCase()}: {displayValue} {unit}
+                      {layer.name.toUpperCase()}: {displayValue}{unit ? ` ${unit}` : ''}
                     </ThemedText>
                   );
                 });
@@ -353,6 +475,17 @@ const styles = StyleSheet.create({
     borderRadius: Spacing.two,
     padding: Spacing.three,
     alignItems: 'center',
+  },
+  sampleButton: {
+    backgroundColor: '#6D4C41',
+    borderRadius: Spacing.two,
+    padding: Spacing.three,
+    alignItems: 'center',
+  },
+  noteText: {
+    color: '#FFD54F',
+    fontSize: 12,
+    marginBottom: Spacing.two,
   },
   buttonText: {
     color: '#fff',
